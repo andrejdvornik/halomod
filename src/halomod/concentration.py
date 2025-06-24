@@ -111,7 +111,7 @@ class CMRelation(Component):
         cosmo: Cosmology = DEFAULT_COSMO,
         filter0: Filter | None = None,
         growth: GrowthFactor | None = None,
-        delta_c: float = 1.686,
+        delta_c: float | np.ndarray = 1.686,
         profile: Profile | None = None,
         mdef: MassDefinition | None = None,
         sigma_8: float = 0.8,
@@ -149,28 +149,30 @@ class CMRelation(Component):
 
         Parameters
         ----------
-        z : float
-            Redshift. Must not be an array.
+        z : array
+            Redshift. Must be an array-like.
         """
+        mnl = np.zeros_like(z)
+        for i,zi in enumerate(z):
+            def model(lnr):
+                return (
+                    self.filter.sigma(np.exp(lnr)) * self.growth.growth_factor(zi) - self.delta_c[i]
+                ) ** 2
 
-        def model(lnr):
-            return (
-                self.filter.sigma(np.exp(lnr)) * self.growth.growth_factor(z) - self.delta_c
-            ) ** 2
+            res = minimize(
+                model,
+                [
+                    1.0,
+                ],
+            )
 
-        res = minimize(
-            model,
-            [
-                1.0,
-            ],
-        )
-
-        if res.success:
-            r = np.exp(res.x[0])
-            return self.filter.radius_to_mass(r, self.mean_density0)  # TODO *(1+z)**3 ????
-        else:
-            warnings.warn("Minimization failed :(", stacklevel=2)
-            return 0
+            if res.success:
+                r = np.exp(res.x[0])
+                mnl[i] = self.filter.radius_to_mass(r, self.mean_density0)  # TODO *(1+z)**3 ????
+            else:
+                warnings.warn("Minimization failed :(", stacklevel=2)
+                mnl[i] = 0
+            return mnl
 
     def cm(self, m, z=0):
         """
@@ -210,15 +212,15 @@ def make_colossus_cm(model="diemer15", **defaults):
                 )
 
         def cm(self, m, z=0):
-            return self.norm * concentration.concentration(
+            return np.array([self.norm * concentration.concentration(
                 M=m,
                 mdef=self.mdef.colossus_name,
-                z=z,
+                z=zi,
                 model=self._model_name,
                 range_return=False,
                 range_warning=True,
                 **self.params,
-            )
+            ) for zi in z])
 
     CustomColossusCM.__name__ = model.capitalize()
     CustomColossusCM.__qualname__ = model.capitalize()
@@ -245,6 +247,7 @@ def interp_concentration(base):
 
         def cm(self, m, z):
             c = base.cm(self, m, z)
+            m = np.tile(m, (z.shape[0], 1))
             if len(c[c > 0]) == 0:
                 return np.ones_like(m)
             else:
@@ -293,10 +296,14 @@ class Bullock01(CMRelation):
         nu = self.filter.nu(r, self.delta_c)
         g = self.growth.growth_factor_fn(inverse=True)
         zc = g(np.sqrt(nu))  # This causes troubles with CambGrowth as it is non-monotonic
-        zc[zc < z] = z  # hack?
+        for i,zi in enumerate(z):
+            zc[i, np.logical_or.accumulate(zc[i, :] == zc[i, :].min())] = zc[i, :].min() # As massive halos have not formed yet, we need to set the formation time of those to the future
+            zc[i, zc[i, :] < zi] = zi  # hack?
         return zc
 
     def cm(self, m, z=0):
+        m = m[np.newaxis, :]
+        z = z[:, np.newaxis]
         return self.params["norm"] * self.params["K"] * (self.zc(m, z) + 1.0) / (z + 1.0)
 
 
@@ -340,6 +347,8 @@ class Bullock01Power(CMRelation):
         return a / (1 + z) ** c * (m / ms) ** b
 
     def cm(self, m, z=0):
+        m = m[np.newaxis, :]
+        z = z[:, np.newaxis]
         ms = self.params["ms"] or self.mass_nonlinear(z)
         return self.params["norm"] * self._cm(
             m, ms, self.params["a"], self.params["b"], self.params["c"], z
@@ -366,6 +375,8 @@ class Maccio07(CMRelation):
     native_mdefs = (SOMean(),)
 
     def cm(self, m, z):
+        m = m[np.newaxis, :]
+        z = z[:, np.newaxis]
         return (
             self.params["norm"]
             * self.params["c_0"]
@@ -417,6 +428,8 @@ class Duffy08(Bullock01Power):
     native_mdefs = (SOCritical(), SOMean(), SOVirial())
 
     def cm(self, m, z=0):
+        m = m[np.newaxis, :]
+        z = z[:, np.newaxis]
         # All the params defined in Table 1 of Duffy 2008
         set_params = {
             "200c": {
@@ -593,7 +606,7 @@ class Ludlow16(CMRelation):
             return out
 
     def cm(self, m, z=0):
-        return self.params["norm"] * self._eq7(self.params["f"], self.params["C"], m, z)
+        return np.array([self.params["norm"] * self._eq7(self.params["f"], self.params["C"], m, zi) for zi in z])
 
 
 class Ludlow16Empirical(CMRelation):
@@ -655,6 +668,8 @@ class Ludlow16Empirical(CMRelation):
         ) / self.growth.growth_factor(z)
 
     def cm(self, m, z=0):
+        m = m[np.newaxis, :]
+        z = z[:, np.newaxis]
         # May be better to use real nu, but we'll do what they do in the paper
         # r = self.filter.mass_to_radius(m, self.mean_density0)
         # nu = self.filter.nu(r,self.delta_c)/self.growth.growth_factor(z)

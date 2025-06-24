@@ -489,24 +489,58 @@ class DMHaloModel(MassFunction):
     @cached_quantity
     def linear_power_fnc(self):
         """A callable returning the linear power as a function of k (in h/Mpc)."""
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self.k,
-            self.power,
+            self.power[i, :],
             lower_func=lambda k: k**self.n,
             upper_func="power_law",
             domain=(0, np.inf),
-        )
+        ) for i in range(self.z.size)]
+        
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
+        
+    @cached_quantity
+    def linear_power_fnc2(self):
+        """A callable returning the linear power as a function of k (in h/Mpc)."""
+        splines = [tools.ExtendedSpline(
+            self.k,
+            self.power[i, :],
+            lower_func=lambda k: k**self.n,
+            upper_func="power_law",
+            domain=(0, np.inf),
+        ) for i in range(self.z.size)]
+        
+        return splines
 
     @cached_quantity
     def nonlinear_power_fnc(self):
         """A callable returning the nonlinear (halofit) power as a function of k (in h/Mpc)."""
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self.k,
-            self.nonlinear_power,
+            self.nonlinear_power[i, :],
             lower_func=lambda k: k**self.n,
             upper_func="power_law",
             domain=(0, np.inf),
-        )
+        ) for i in range(self.z.size)]
+        
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
+        
+    @cached_quantity
+    def nonlinear_power_fnc2(self):
+        """A callable returning the nonlinear (halofit) power as a function of k (in h/Mpc)."""
+        splines = [tools.ExtendedSpline(
+            self.k,
+            self.nonlinear_power[i, :],
+            lower_func=lambda k: k**self.n,
+            upper_func="power_law",
+            domain=(0, np.inf),
+        ) for i in range(self.z.size)]
+        
+        return splines
 
     @cached_quantity
     def corr_linear_mm_fnc(self):
@@ -622,33 +656,39 @@ class DMHaloModel(MassFunction):
     def _do_1halo_integral(self, max_mmin, integrand, mean_dens):
         """Do the 1-halo integral for some quantity, doing the turnover trick."""
         dens_min = 4 * np.pi * self.mean_density0 * self.halo_overdensity_mean / 3
-        p = np.zeros_like(self.k)
-        for i, (k, integ) in enumerate(zip(self.k, integrand)):
-            if self.force_1halo_turnover:
-                r = np.pi / k / 10  # The 10 is a complete heuristic hack.
-                mmin = max(max_mmin, dens_min * r**3)
-            else:
-                mmin = max_mmin
+        mean_dens = np.atleast_1d(mean_dens)
+        p = np.zeros((self.z.size, self.k.size))
+        for i in range(self.z.size):
+            for j, (k, integ) in enumerate(zip(self.k, integrand[i, :, :])):
+                if self.force_1halo_turnover:
+                    r = np.pi / k / 10  # The 10 is a complete heuristic hack.
+                    mmin = max(max_mmin, dens_min[i] * r**3)
+                else:
+                    mmin = max_mmin
 
-            p[i] = tools.spline_integral(self.m, integ, xmin=mmin)
+                p[i, j] = tools.spline_integral(self.m, integ, xmin=mmin)
 
-        return p / mean_dens**2
+        return p / mean_dens[:, np.newaxis]**2
 
     @cached_quantity
     def power_1h_auto_matter_fnc(self):
         """A callable returning the halo model 1-halo DM auto-power spectrum."""
         p = self._do_1halo_integral(
             max_mmin=self.m[0],
-            integrand=self.dndm * self.m**2 * self.halo_profile_ukm**2,
+            integrand=self.dndm[:, np.newaxis, :] * self.m**2 * self.halo_profile_ukm**2,
             mean_dens=self.mean_density0,
         )
 
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self.k,
-            p,
+            p[i, :],
             lower_func=tools._zero if self.force_1halo_turnover else "boundary",
             upper_func="power_law",
-        )
+        ) for i in range(self.z.size)]
+
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @property
     def power_1h_auto_matter(self):
@@ -658,22 +698,30 @@ class DMHaloModel(MassFunction):
     @cached_quantity
     def corr_1h_auto_matter_fnc(self):
         """A callable returning the halo model 1-halo DM auto-correlation function."""
-        if self.halo_profile.has_lam:
-            lam = self.halo_profile_lam
-            integrand = self.dndm * self.m**3 * lam
+        table = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            if self.halo_profile.has_lam:
+                lam = self.halo_profile_lam
+                print(lam.shape)
+                print(self.dndm.shape)
+                integrand = self.dndm[i, :] * self.m**3 * lam[i, :, :]
 
-            table = (
-                intg.trapezoid(integrand, dx=np.log(10) * self.dlog10m) / self.mean_density0**2 - 1
-            )
-        else:
-            table = tools.hankel_transform(self.power_1h_auto_matter_fnc, self._r_table, "r")
+                table[i, :] = (
+                    intg.trapezoid(integrand, dx=np.log(10) * self.dlog10m) / self.mean_density0**2 - 1
+                )
+            else:
+                table[i, :] = tools.hankel_transform(self.power_1h_auto_matter_fnc, self._r_table, "r")
 
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self._r_table,
-            table,
+            table[i, :],
             lower_func="power_law",
             upper_func=lambda x: np.zeros_like(x),
-        )
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_1h_auto_matter(self):
@@ -1307,16 +1355,20 @@ class TracerHaloModel(DMHaloModel):
         """
         p = self._do_1halo_integral(
             max_mmin=self.hod.mmin,
-            integrand=self.tracer_profile_ukm**2 * self.dndm * self.hod.ss_pairs(self.m),
+            integrand=self.tracer_profile_ukm**2 * self.dndm[:, np.newaxis, :] * self.hod.ss_pairs(self.m),
             mean_dens=self.mean_tracer_den,
         )
 
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self.k,
-            p,
+            p[i, :],
             lower_func=tools._zero if self.force_1halo_turnover else "boundary",
             upper_func="power_law",
-        )
+        ) for i in range(self.z.size)]
+
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @property
     def power_1h_ss_auto_tracer(self):
@@ -1335,19 +1387,24 @@ class TracerHaloModel(DMHaloModel):
         Note: May not exist for every kind of tracer.
         """
         ss_pairs = self.hod.ss_pairs(self.m)
-        if self.tracer_profile.has_lam:
-            c = np.zeros_like(self._r_table)
-            for i, lam in enumerate(self.tracer_profile_lam):
-                c[i] = tools.spline_integral(
-                    self.m, lam * self.dndm * ss_pairs, xmin=self.tracer_mmin
-                )
-            c = c / self.mean_tracer_den**2 - 1
+        c = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            if self.tracer_profile.has_lam:
+                for j, lam in enumerate(self.tracer_profile_lam[i, :, :]):
+                    c[i, j] = tools.spline_integral(
+                        self.m, lam * self.dndm[i, :] * ss_pairs, xmin=self.tracer_mmin
+                    )
+                c[i, :] = c[i, :] / self.mean_tracer_den[i, np.newaxis]**2 - 1
 
-        else:
-            c = tools.hankel_transform(self.power_1h_ss_auto_tracer_fnc, self._r_table, "r")
-        return tools.ExtendedSpline(
-            self._r_table, c, lower_func="power_law", upper_func=tools._zero
-        )
+            else:
+                c[i, :] = tools.hankel_transform(self.power_1h_ss_auto_tracer_fnc, self._r_table, "r")
+        splines =  [tools.ExtendedSpline(
+            self._r_table, c[i, :], lower_func="power_law", upper_func=tools._zero
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_1h_ss_auto_tracer(self):
@@ -1368,16 +1425,19 @@ class TracerHaloModel(DMHaloModel):
         """
         p = self._do_1halo_integral(
             max_mmin=self.hod.mmin,
-            integrand=self.dndm * 2 * self.hod.cs_pairs(self.m) * self.tracer_profile_ukm,
+            integrand=self.dndm[:, np.newaxis, :] * 2 * self.hod.cs_pairs(self.m) * self.tracer_profile_ukm,
             mean_dens=self.mean_tracer_den,
         )
-
-        return tools.ExtendedSpline(
+        splines = [tools.ExtendedSpline(
             self.k,
-            p,
+            p[i, :],
             lower_func=tools._zero if self.force_1halo_turnover else "boundary",
             upper_func="power_law" if np.all(p[-10:] > 0) else tools._zero,
-        )
+        ) for i in range(self.z.size)]
+
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @property
     def power_1h_cs_auto_tracer(self):
@@ -1394,18 +1454,23 @@ class TracerHaloModel(DMHaloModel):
 
         Note: May not exist for every kind of tracer.
         """
-        c = np.zeros_like(self._r_table)
         cs_pairs = self.hod.cs_pairs(self.m)
-        for i, rho in enumerate(self.tracer_profile_rho):
-            c[i] = tools.spline_integral(
-                self.m, self.dndm * 2 * cs_pairs * rho, xmin=self.tracer_mmin
-            )
+        c = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            for j, rho in enumerate(self.tracer_profile_rho[i, :, :]):
+                c[i, j] = tools.spline_integral(
+                    self.m, self.dndm[i, :] * 2 * cs_pairs * rho, xmin=self.tracer_mmin
+                )
 
-        c = c / self.mean_tracer_den**2 - 1
+            c[i, :] = c[i, :] / self.mean_tracer_den[i]**2 - 1
 
-        return tools.ExtendedSpline(
-            self._r_table, c, lower_func="power_law", upper_func=tools._zero
-        )
+        splines = [tools.ExtendedSpline(
+            self._r_table, c[i, :], lower_func="power_law", upper_func=tools._zero
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_1h_cs_auto_tracer(self):
@@ -1428,35 +1493,41 @@ class TracerHaloModel(DMHaloModel):
     @cached_quantity
     def corr_1h_auto_tracer_fnc(self):
         """A callable returning the 1-halo term of the tracer auto correlations."""
-        if self.tracer_profile.has_lam:
-            c = np.zeros_like(self._r_table)
+        
+        c = np.zeros((self.z.size, self._r_table.size))
+        ss_pairs = self.hod.ss_pairs(self.m)
+        cs_pairs = self.hod.cs_pairs(self.m)
+        
+        for i in range(self.z.size):
+            if self.tracer_profile.has_lam:
+                for j, (rho, lam) in enumerate(zip(self.tracer_profile_rho[i, :, :], self.tracer_profile_lam[i, :, :])):
+                    c[i, j] = tools.spline_integral(
+                        self.m,
+                        self.dndm[i, :]
+                        * (ss_pairs * lam + 2 * cs_pairs * rho)
+                        * (self._central_occupation if self.hod._central else 1),
+                        xmin=self.tracer_mmin,
+                    )
 
-            ss_pairs = self.hod.ss_pairs(self.m)
-            cs_pairs = self.hod.cs_pairs(self.m)
-            for i, (rho, lam) in enumerate(zip(self.tracer_profile_rho, self.tracer_profile_lam)):
-                c[i] = tools.spline_integral(
-                    self.m,
-                    self.dndm
-                    * (ss_pairs * lam + 2 * cs_pairs * rho)
-                    * (self._central_occupation if self.hod._central else 1),
-                    xmin=self.tracer_mmin,
-                )
+                c[i, :] /= self.mean_tracer_den[i]**2
 
-            c /= self.mean_tracer_den**2
+            else:
+                try:
+                    return (
+                        lambda r: self.corr_1h_cs_auto_tracer_fnc(r)
+                        + self.corr_1h_ss_auto_tracer_fnc(r)
+                        + 1
+                    )
+                except AttributeError:
+                    c[i, :] = tools.hankel_transform(self.power_1h_auto_tracer_fnc, self.r, "r")
 
-        else:
-            try:
-                return (
-                    lambda r: self.corr_1h_cs_auto_tracer_fnc(r)
-                    + self.corr_1h_ss_auto_tracer_fnc(r)
-                    + 1
-                )
-            except AttributeError:
-                c = tools.hankel_transform(self.power_1h_auto_tracer_fnc, self.r, "r")
+        splines = [tools.ExtendedSpline(
+            self._r_table, c[i, :], lower_func="power_law", upper_func=tools._zero
+        ) for i in range(self.z.size)]
 
-        return tools.ExtendedSpline(
-            self._r_table, c, lower_func="power_law", upper_func=tools._zero
-        )
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_1h_auto_tracer(self):
@@ -1468,14 +1539,14 @@ class TracerHaloModel(DMHaloModel):
         densityfunc = self.dndm[self._tm] * self.total_occupation[self._tm] / self.mean_tracer_den
 
         if self.sd_bias_model is not None:
-            bias = np.outer(self.sd_bias_correction, self.halo_bias)[:, self._tm]
+            bias = (self.sd_bias_correction[:, :, np.newaxis] * self.halo_bias[:, np.newaxis, :])[:, :, self._tm]
         else:
             bias = self.halo_bias[self._tm]
 
         return self.exclusion_model(
             m=self.m[self._tm],
             density=densityfunc,
-            power_integrand=densityfunc * self.tracer_profile_ukm[:, self._tm],
+            power_integrand=densityfunc[:, np.newaxis, :] * self.tracer_profile_ukm[:, :, self._tm],
             bias=bias,
             r=self._r_table,
             halo_density=self.halo_overdensity_mean * self.mean_density0,
@@ -1536,17 +1607,24 @@ class TracerHaloModel(DMHaloModel):
         A callable returning the total 1-halo cross-power spectrum
         between tracer and matter.
         """
-        p = np.zeros_like(self.k)
-        for i, (ut, uh) in enumerate(zip(self.tracer_profile_ukm, self.halo_profile_ukm)):
-            p[i] = tools.spline_integral(
-                self.m,
-                self.dndm
-                * (uh * ut * self._total_occupation * self.m + uh * self.satellite_occupation),
-                xmin=self.tracer_mmin,
-            )
+        p = np.zeros((self.z.size, self.k.size))
+        for i in range(self.z.size):
+            for j, (ut, uh) in enumerate(zip(self.tracer_profile_ukm[i, :, :], self.halo_profile_ukm[i, :, :])):
+                p[i, j] = tools.spline_integral(
+                    self.m,
+                    self.dndm[i, :]
+                    * (uh * ut * self._total_occupation * self.m + uh * self.satellite_occupation),
+                    xmin=self.tracer_mmin,
+                )
 
-        p /= self.mean_tracer_den * self.mean_density0
-        return tools.ExtendedSpline(self.k, p, lower_func="power_law", upper_func="power_law")
+        p /= self.mean_tracer_den[:, np.newaxis] * self.mean_density0
+
+        # Create a list of splines for each redshift
+        splines = [tools.ExtendedSpline(self.k, p[i, :], lower_func="power_law", upper_func="power_law") for i in range(self.z.size)]
+
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @property
     def power_1h_cross_tracer_matter(self):
@@ -1570,15 +1648,16 @@ class TracerHaloModel(DMHaloModel):
     def power_2h_cross_tracer_matter_fnc(self):
         """A callable returning the 2-halo cross-power between tracer and matter."""
         # Do this the simple way for now
-        bt = np.zeros_like(self.k)
-        bm = np.zeros_like(self.k)
-        for i, (ut, um) in enumerate(zip(self.tracer_profile_ukm, self.halo_profile_ukm)):
-            bt[i] = tools.spline_integral(
-                self.m,
-                self.dndm * self.halo_bias * self._total_occupation * ut,
-                xmin=self.tracer_mmin,
-            )
-            bm[i] = tools.spline_integral(self.m, self.dndm * self.halo_bias * self.m * um)
+        bt = np.zeros((self.z.size, self.k.size))
+        bm = np.zeros((self.z.size, self.k.size))
+        for i in range(self.z.size):
+            for j, (ut, um) in enumerate(zip(self.tracer_profile_ukm[i, :, :], self.halo_profile_ukm[i, :, :])):
+                bt[i, j] = tools.spline_integral(
+                    self.m,
+                    self.dndm[i, :] * self.halo_bias[i, :] * self._total_occupation * ut,
+                    xmin=self.tracer_mmin,
+                )
+                bm[i, j] = tools.spline_integral(self.m, self.dndm[i, :] * self.halo_bias[i, :] * self.m * um)
 
         power = (
             bt
@@ -1587,12 +1666,16 @@ class TracerHaloModel(DMHaloModel):
             / (self.mean_tracer_den * self.mean_density0)
         )
 
-        return tools.ExtendedSpline(
+        splines = np.array([tools.ExtendedSpline(
             self.k,
             power,
             lower_func="power_law",
             upper_func="power_law" if "filtered" not in self.hc_spectrum else tools._zero,
-        )
+        ) for i in range(self.z.size)])
+        
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @property
     def power_2h_cross_tracer_matter(self):

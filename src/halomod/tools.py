@@ -12,7 +12,7 @@ from functools import lru_cache
 
 import numpy as np
 import scipy.integrate as intg
-from scipy.interpolate import InterpolatedUnivariateSpline as spline
+from scipy.interpolate import InterpolatedUnivariateSpline as spline, make_interp_spline
 from scipy.interpolate import UnivariateSpline as uspline
 from scipy.stats import poisson
 
@@ -630,14 +630,16 @@ def spline_integral(
         )
 
     if log:
-        spl = spline(np.log(x), x * f)
-        return spl.integral(
+        #spl = spline(np.log(x), x * f)
+        spl = make_interp_spline(np.log(x), x * f, axis=-1)
+        return spl.integrate(
             np.log(xmin) if xmin is not None else np.log(x.min()),
             np.log(xmax) if xmax is not None else np.log(x.max()),
         )
     else:
-        spl = spline(x, f)
-        return spl.integral(xmin or x.min(), xmax or x.max())
+        #spl = spline(x, f)
+        spl = make_interp_spline(x, f, axis=-1)
+        return spl.integrate(xmin or x.min(), xmax or x.max())
 
 
 def norm_warn(self):

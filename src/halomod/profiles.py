@@ -132,13 +132,12 @@ class Profile(Component):
         # the radius of a halo of a given mass at a given redshift should only depend on
         # the background density at z=0.
         dens = self.mean_dens if at_z else self.mean_density0
-        return (3 * m / (4 * np.pi * self.delta_halo * dens)) ** (1.0 / 3.0)
+        return (3 * m[np.newaxis, :] / (4 * np.pi * self.delta_halo * dens)[:, np.newaxis]) ** (1.0 / 3.0)
 
     def halo_radius_to_mass(self, r, at_z=False):
         """Return the halo mass corresponding to ``r``."""
         dens = self.mean_dens if at_z else self.mean_density0
-
-        return 4 * np.pi * r**3 * self.delta_halo * dens / 3
+        return 4 * np.pi * r**3 * (self.delta_halo * dens)[:, np.newaxis] / 3
 
     def _rs_from_m(self, m, c=None, at_z=False):
         """
@@ -220,17 +219,15 @@ class Profile(Component):
             raise ValueError("Either c or m must be provided.")
         if m is not None:
             c = self.cm_relation(m)
-
-        x, dx = np.linspace(1e-6, np.max(c), 2000, retstep=True)
-        integrand = self._f(x) * x**2
-
-        integ = intg.cumulative_simpson(integrand, dx=dx, initial=0)
-
-        if not hasattr(c, "__len__"):
-            return integ[-1]
-        else:
+    
+        out = np.zeros((c.shape[0], c.shape[2]))
+        for i in range(c.shape[0]):
+            x, dx = np.linspace(1e-6, np.max(c[i, 0, :]), 2000, retstep=True)
+            integrand = self._f(x) * x**2
+            integ = intg.cumulative_simpson(integrand, dx=dx, initial=0)
             sp = spline(x, integ, k=3)
-            return sp(c)
+            out[i, :] = sp(c[i, 0, :])
+        return out[:, np.newaxis, :]
 
     def _p(self, K: np.ndarray, c: np.ndarray):
         r"""
@@ -258,51 +255,53 @@ class Profile(Component):
         of the profile, taken to a Hankel transform.
         """
         c = np.atleast_1d(c)
-        if K.ndim < 2:
+        if K.ndim < 3:
             # should be len(k) * len(rs)
-            K = np.atleast_2d(K) if len(K) != len(c) else np.atleast_2d(K).T
+            K = np.atleast_3d(K) if len(K) != len(c) else np.atleast_3d(K).T
 
-        assert K.ndim == 2
-        assert K.shape[1] == len(c)
-
-        sort_indx = np.argsort(c)
-
-        # We get a shorter vector of different K's to find the integral for, otherwise
-        # we need to do a full integral for every K (which is 2D, since K is different
-        # for every c).
-        kk = np.logspace(np.log10(K.min()), np.log10(K.max()), 100)
-
-        intermediate_res = np.zeros((len(c), len(kk)))
-
-        # To make it more efficient, we do the integral in parts cumulatively, so we
-        # can get the value at each c in turn.
-        for j, k in enumerate(kk):
-            # Get all zeros up to the maximum c
-            zeros = np.pi / k * np.arange(c.max() // (np.pi / k))
-            for i, indx in enumerate(sort_indx):
-                # Get the limits on c for this iteration.
-                c_0 = 0 if not i else c[sort_indx[i - 1]]
-                c_1 = c[indx]
-                points = zeros[(c_0 < zeros) & (zeros < c_1)]
-                integral = quad(
-                    lambda x: x * self._f(x) * np.sin(k * x) / k,  # noqa: B023
-                    c_0,
-                    c_1,
-                    points=points,
-                    limit=max(50, len(points) + 1),
-                )[0]
-
-                # If its not the minimum c, add it to the previous integrand.
-                if i:
-                    intermediate_res[indx, j] = intermediate_res[sort_indx[i - 1], j] + integral
-                else:
-                    intermediate_res[indx, j] = integral
-
-        # Now we need to interpolate onto the actual K values we have at each c.
+        assert K.ndim == 3
+        assert K.shape[2] == c.shape[2]
+        
         out = np.zeros_like(K)
-        for ic, integral in enumerate(intermediate_res):
-            spl = spline(kk, integral)
-            out[:, ic] = spl(K[:, ic])
+        
+        for ii in range(K.shape[0]):
+            sort_indx = np.argsort(c[ii, 0, :])
+    
+            # We get a shorter vector of different K's to find the integral for, otherwise
+            # we need to do a full integral for every K (which is 2D, since K is different
+            # for every c).
+            kk = np.logspace(np.log10(K[ii, :, :].min()), np.log10(K[ii, :, :].max()), 100)
+    
+            intermediate_res = np.zeros((c.shape[2], len(kk)))
+    
+            # To make it more efficient, we do the integral in parts cumulatively, so we
+            # can get the value at each c in turn.
+            for j, k in enumerate(kk):
+                # Get all zeros up to the maximum c
+                zeros = np.pi / k * np.arange(c[ii, 0, :].max() // (np.pi / k))
+                for i, indx in enumerate(sort_indx):
+                    # Get the limits on c for this iteration.
+                    c_0 = 0 if not i else c[ii, 0, sort_indx[i - 1]]
+                    c_1 = c[ii, 0, indx]
+                    points = zeros[(c_0 < zeros) & (zeros < c_1)]
+                    integral = quad(
+                        lambda x: x * self._f(x) * np.sin(k * x) / k,  # noqa: B023
+                        c_0,
+                        c_1,
+                        points=points,
+                        limit=max(50, len(points) + 1),
+                    )[0]
+    
+                    # If its not the minimum c, add it to the previous integrand.
+                    if i:
+                        intermediate_res[indx, j] = intermediate_res[sort_indx[i - 1], j] + integral
+                    else:
+                        intermediate_res[indx, j] = integral
+    
+            # Now we need to interpolate onto the actual K values we have at each c.
+            for ic, integral in enumerate(intermediate_res):
+                spl = spline(kk, integral)
+                out[ii, :, ic] = spl(K[ii, :, ic])
 
         return out
 
@@ -322,11 +321,11 @@ class Profile(Component):
             The scale radius. This is only required if ``norm`` is "m".
         """
         if norm is None:
-            rho = c**3 * self.delta_halo * self.mean_dens / (3 * self._h(c))
+            rho = c**3 * self.delta_halo[:, np.newaxis, np.newaxis] * self.mean_dens[:, np.newaxis, np.newaxis] / (3 * self._h(c))
         elif norm == "m":
             rho = 1.0 / (4 * np.pi * r_s**3 * self._h(c))
         elif norm == "rho":
-            rho = c**3 * self.delta_halo / (3 * self._h(c))
+            rho = c**3 * self.delta_halo[:, np.newaxis, np.newaxis] / (3 * self._h(c))
 
         return self._reduce(rho)
 
@@ -457,14 +456,18 @@ class Profile(Component):
         r_s = self._rs_from_m(m, c)
 
         if coord == "r":
-            x = np.divide.outer(r, r_s)
+            #x = np.divide.outer(r, r_s)
+            x = r[np.newaxis, :, np.newaxis] / r_s[:, np.newaxis, :]
         elif coord == "x":
-            x = r
+            #x = r
+            x = r[np.newaxis, :, np.newaxis]
         elif coord == "s":
-            x = np.outer(r, c)
+            #x = np.outer(r, c)
+            x = r[np.newaxis, :, np.newaxis] * c[:, np.newaxis, :]
         else:
             raise ValueError(f"coord must be one of 'r', 'x' or 's', got '{coord}'.")
-        return c, r_s, x
+        #return c, r_s, x
+        return np.repeat(c[:, np.newaxis, :], r.size, axis=1), np.repeat(r_s[:, np.newaxis, :], r.size, axis=1), x
 
     def _get_k_variables(self, k, m, c=None, coord="k"):
         """
@@ -483,11 +486,14 @@ class Profile(Component):
         r_s = self._rs_from_m(m, c)
 
         if coord == "k":
-            K = np.outer(k, r_s) if np.iterable(k) and np.iterable(r_s) else k * r_s
+            #K = np.outer(k, r_s) if np.iterable(k) and np.iterable(r_s) else k * r_s
+            # [k_dim, r_s_dim]
+            K = k[np.newaxis, :, np.newaxis] * r_s[:, np.newaxis, :]
         elif coord == "kappa":
             K = k
 
-        return c, K
+        return c[:, np.newaxis, :], K
+        #return c, K
 
     def _reduce(self, x):
         x = np.squeeze(np.atleast_1d(x))
@@ -845,17 +851,20 @@ class MooreInf(Moore, ProfileInf):
                 k**6 / 46656.0,
             ) / (4 * np.sqrt(3) * np.pi ** (5 / 2) * k)
 
-        if K.ndim == 2:
-            K1 = np.reshape(K, -1)
-            K1.sort()
-        else:
-            K1 = K
-        res = np.zeros(len(K[K < 10**3.2]))
-        for i, k in enumerate(K1[K1 < 10**3.2]):
-            res[i] = G(k)
-
-        fit = spline(np.log(K1[K1 < 10**3.2]), np.log(res), k=1)
-        res = np.reshape(np.exp(fit(np.log(np.reshape(K, -1)))), (len(K[:, 0]), len(K[0, :])))
+        res = np.zeros_like(K)
+        for i in range(K.shape[0]):
+            Ki = K[i, :, :]
+            if len(Ki.shape) == 2:
+                K1 = np.reshape(Ki, -1)
+                K1.sort()
+            else:
+                K1 = Ki
+            res_i = np.zeros(len(Ki[Ki < 10**3.2]))
+            for i, k in enumerate(K1[K1 < 10**3.2]):
+                res_i[i] = G(k)
+    
+            fit = spline(np.log(K1[K1 < 10**3.2]), np.log(res_i), k=1)
+            res[i, :, :] = np.reshape(np.exp(fit(np.log(np.reshape(Ki, -1)))), (len(Ki[:, 0]), len(Ki[0, :])))
 
         return res
 
@@ -934,18 +943,21 @@ class GeneralizedNFWInf(GeneralizedNFW, ProfileInf):
                 [[0, 0, 0.5], [-0.5]],
                 k**2 / 4,
             ) / (np.sqrt(np.pi) * sp.gamma(3 - self.params["alpha"]))
-
-        if len(K.shape) == 2:
-            K1 = np.reshape(K, -1)
-            K1.sort()
-        else:
-            K1 = K
-        res = np.zeros(len(K[K < 10**3.2]))
-        for i, k in enumerate(K1[K1 < 10**3.2]):
-            res[i] = G(k)
-
-        fit = spline(np.log(K1[K1 < 10**3.2]), np.log(res), k=1)
-        res = np.reshape(np.exp(fit(np.log(np.reshape(K, -1)))), (len(K[:, 0]), len(K[0, :])))
+        
+        res = np.zeros_like(K)
+        for i in range(K.shape[0]):
+            Ki = K[i, :, :]
+            if len(Ki.shape) == 2:
+                K1 = np.reshape(Ki, -1)
+                K1.sort()
+            else:
+                K1 = Ki
+            res_i = np.zeros(len(Ki[Ki < 10**3.2]))
+            for i, k in enumerate(K1[K1 < 10**3.2]):
+                res_i[i] = G(k)
+    
+            fit = spline(np.log(K1[K1 < 10**3.2]), np.log(res_i), k=1)
+            res[i, :, :] = np.reshape(np.exp(fit(np.log(np.reshape(Ki, -1)))), (len(Ki[:, 0]), len(Ki[0, :])))
 
         return res
 
@@ -1012,16 +1024,20 @@ class Einasto(Profile):
 
             c = np.atleast_1d(c)
             if np.isscalar(K):
-                K = np.atleast_2d(K)
+                K = np.atleast_3d(K)
             if K.ndim < 2:
                 # should be len(rs) x len(k)
-                K = np.atleast_2d(K).T if len(K) != len(c) else np.atleast_2d(K)
+                K = np.atleast_3d(K).T if len(K) != len(c) else np.atleast_3d(K)
 
             pk[pk <= 0] = 1e-8
 
             spl = RectBivariateSpline(np.log(_k), np.log(_c), np.log(pk))
-            cc = np.repeat(c, K.shape[0])
-            return np.exp(self._reduce(spl.ev(np.log(K.flatten()), np.log(cc)).reshape(K.shape)))
+            
+            out = np.zeros_like(K)
+            for i in range(K.shape[0]):
+                cc = np.repeat(c[i, :, :], K[i, :, :].shape[0])
+                out[i, :, :] = np.exp(self._reduce(spl.ev(np.log(K[i, :, :].flatten()), np.log(cc)).reshape(K[i, :, :].shape)))
+            return out
         else:  # Numerical version.
             return super()._p(K, c)
 

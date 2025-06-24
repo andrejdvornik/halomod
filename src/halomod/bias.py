@@ -88,7 +88,7 @@ class Bias(Component):
     ----------
     nu : array-like
         Peak-height, ``delta^2_c/sigma^2``.
-    delta_c : float, optional
+    delta_c : array-like, optional
         Critical over-density for collapse. Not all bias components require this
         parameter.
     m : array, optional
@@ -121,7 +121,7 @@ class Bias(Component):
     def __init__(
         self,
         nu: np.ndarray,
-        delta_c: float = 1.686,
+        delta_c: float | np.ndarray = 1.686,
         m: np.ndarray | None = None,
         mstar: float | None = None,
         delta_halo: float | None = 200,
@@ -129,7 +129,7 @@ class Bias(Component):
         sigma_8: float | None = 0.8,
         cosmo: FLRW = Planck15,
         n_eff: None | np.ndarray = None,
-        z: float = 0.0,
+        z: float | np.ndarray = 0.0,
         **model_parameters,
     ):
         self.nu = nu
