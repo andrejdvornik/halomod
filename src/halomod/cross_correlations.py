@@ -231,7 +231,7 @@ class CrossCorrelations(Framework):
         )
 
     @cached_quantity
-    def power_1h_cross_fnc(self):
+    def power_1h_cross_fnc_(self):
         """Total 1-halo cross-power."""
         hm1, hm2 = self.halo_model_1, self.halo_model_2
         mask = np.logical_and(
@@ -243,20 +243,30 @@ class CrossCorrelations(Framework):
         )
 
         m = hm1.m[mask]
-        u1 = hm1.tracer_profile_ukm[:, mask]
-        u2 = hm2.tracer_profile_ukm[:, mask]
+        u1 = hm1.tracer_profile_ukm[:, :, mask]
+        u2 = hm2.tracer_profile_ukm[:, :, mask]
 
-        integ = hm1.dndm[mask] * (
-            u1 * u2 * self.cross_hod.ss_cross_pairs(m)
-            + u1 * self.cross_hod.sc_cross_pairs(m)
-            + u2 * self.cross_hod.cs_cross_pairs(m)
+        integ = hm1.dndm[:, np.newaxis, mask] * (
+            u1 * u2 * self.cross_hod.ss_cross_pairs(m)[np.newaxis, np.newaxis, :]
+            + u1 * self.cross_hod.sc_cross_pairs(m)[np.newaxis, np.newaxis, :]
+            + u2 * self.cross_hod.cs_cross_pairs(m)[np.newaxis, np.newaxis, :]
         )
 
-        p = intg.simpson(integ, x=m)
+        p = intg.simpson(integ, x=m, axis=-1)
 
-        p /= hm1.mean_tracer_den * hm2.mean_tracer_den
-        return tools.ExtendedSpline(hm1.k, p, lower_func="power_law", upper_func="power_law")
-
+        p /= hm1.mean_tracer_den[:, np.newaxis] * hm2.mean_tracer_den[:, np.newaxis]
+        return [tools.ExtendedSpline(hm1.k, p[i, :], lower_func="power_law", upper_func="power_law")
+            for i in range(self.z.size)
+        ]
+        
+    @cached_quantity
+    def power_1h_cross_fnc(self):
+        """Total 1-halo cross-power."""
+        splines = self.power_1h_cross_fnc_
+        return lambda k: np.array([
+            splines[i](k) for i in range(self.z,size)
+        ])
+        
     @property
     def power_1h_cross(self):
         """Total 1-halo cross-power."""
@@ -265,13 +275,18 @@ class CrossCorrelations(Framework):
     @cached_quantity
     def corr_1h_cross_fnc(self):
         """The 1-halo term of the cross correlation."""
-        corr = tools.hankel_transform(self.power_1h_cross_fnc, self.halo_model_1._r_table, "r")
-        return tools.ExtendedSpline(
+        corr = [tools.hankel_transform(
+            self.power_1h_cross_fnc_[i], self.halo_model_1._r_table, "r"
+        ) for i in range(self.z.size)]
+        splines = [tools.ExtendedSpline(
             self.halo_model_1._r_table,
-            corr,
+            corr[i, :],
             lower_func="power_law",
             upper_func=tools._zero,
-        )
+        ) for i in range(self.z.size)]
+        return lambda r: np.array([
+            splines[i](r) for i in range(self.z,size)
+        ])
 
     @cached_quantity
     def corr_1h_cross(self):
@@ -279,40 +294,48 @@ class CrossCorrelations(Framework):
         return self.corr_1h_cross_fnc(self.halo_model_1.r)
 
     @cached_quantity
-    def power_2h_cross_fnc(self):
+    def power_2h_cross_fnc_(self):
         """The 2-halo term of the cross-power spectrum."""
         hm1, hm2 = self.halo_model_1, self.halo_model_2
 
-        u1 = hm1.tracer_profile_ukm[:, hm1._tm]
-        u2 = hm2.tracer_profile_ukm[:, hm2._tm]
+        u1 = hm1.tracer_profile_ukm[:, :, hm1._tm]
+        u2 = hm2.tracer_profile_ukm[:, :, hm2._tm]
 
         bias = hm1.halo_bias
 
         # Do this the simple way for now
         b1 = intg.simpson(
-            hm1.dndm[hm1._tm] * bias[hm1._tm] * hm1.total_occupation[hm1._tm] * u1,
-            x=hm1.m[hm1._tm],
+            hm1.dndm[:, np.newaxis, hm1._tm] * bias[:, np.newaxis, hm1._tm] * hm1.total_occupation[np.newaxis, np.newaxis, hm1._tm] * u1,
+            x=hm1.m[hm1._tm], axis=-1
         )
         b2 = intg.simpson(
-            hm2.dndm[hm2._tm] * bias[hm2._tm] * hm2.total_occupation[hm2._tm] * u2,
-            x=hm2.m[hm2._tm],
+            hm2.dndm[:, np.newaxis, hm2._tm] * bias[:, np.newaxis, hm2._tm] * hm2.total_occupation[np.newaxis, np.newaxis, hm2._tm] * u2,
+            x=hm2.m[hm2._tm], axis=-1
         )
 
         p = (
             b1
             * b2
             * hm1._power_halo_centres_fnc(hm1.k)
-            / (hm1.mean_tracer_den * hm2.mean_tracer_den)
+            / (hm1.mean_tracer_den[:, np.newaxis] * hm2.mean_tracer_den[:, np.newaxis])
         )
 
-        return tools.ExtendedSpline(
+        return [tools.ExtendedSpline(
             hm1.k,
-            p,
+            p[i, :],
             lower_func=hm1.linear_power_fnc,
             match_lower=True,
             upper_func="power_law",
-        )
-
+        ) for i in range(self.z.size)]
+        
+    @cached_quantity
+    def power_2h_cross_fnc(self):
+        """The 2-halo term of the cross-power spectrum."""
+        splines = self.power_2h_cross_fnc_
+        return lambda k: np.array([
+            splines[i](k) for i in range(self.z,size)
+        ])
+        
     @property
     def power_2h_cross(self):
         """The 2-halo term of the cross-power spectrum."""
@@ -321,15 +344,18 @@ class CrossCorrelations(Framework):
     @cached_quantity
     def corr_2h_cross_fnc(self):
         """The 2-halo term of the cross-correlation."""
-        corr = tools.hankel_transform(
-            self.power_2h_cross_fnc, self.halo_model_1._r_table, "r", h=1e-4
-        )
-        return tools.ExtendedSpline(
+        corr = [tools.hankel_transform(
+            self.power_2h_cross_fnc_[i], self.halo_model_1._r_table, "r", h=1e-4
+        ) for i in range(self.z.size)]
+        splines = [tools.ExtendedSpline(
             self.halo_model_1._r_table,
-            corr,
+            corr[i, :],
             lower_func="power_law",
             upper_func=tools._zero,
-        )
+        ) for i in range(self.z.size)]
+        return lambda r: np.array([
+            splines[i](r) for i in range(self.z,size)
+        ])
 
     @cached_quantity
     def corr_2h_cross(self):

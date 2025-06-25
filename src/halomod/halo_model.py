@@ -463,7 +463,7 @@ class DMHaloModel(MassFunction):
                 match_lower=False,
             ) for i in range(self.z.size)]
             return lambda k: np.array([
-                splines[i](k) for i, z in enumerate(self.z)
+                splines[i](k) for i in range(self.z.size)
             ])
         elif self.hc_spectrum == "filtered-nl":
             f = TopHat(None, None)
@@ -478,7 +478,7 @@ class DMHaloModel(MassFunction):
                 match_lower=False,
             ) for i in range(self.z.size)]
             return lambda k: np.array([
-                splines[i](k) for i, z in enumerate(self.z)
+                splines[i](k) for i in range(self.z.size)
             ])
         elif self.hc_spectrum == "linear":
             return self.linear_power_fnc
@@ -508,7 +508,7 @@ class DMHaloModel(MassFunction):
         """A callable returning the linear power as a function of k (in h/Mpc)."""
         splines = self.linear_power_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -527,7 +527,7 @@ class DMHaloModel(MassFunction):
         """A callable returning the nonlinear (halofit) power as a function of k (in h/Mpc)."""
         splines = self.nonlinear_power_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -544,7 +544,7 @@ class DMHaloModel(MassFunction):
         ) for i in range(self.z.size)]
         
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -566,7 +566,7 @@ class DMHaloModel(MassFunction):
         ) for i in range(self.z.size)]
         
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -687,7 +687,7 @@ class DMHaloModel(MassFunction):
         ) for i in range(self.z.size)]
 
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @property
@@ -718,7 +718,7 @@ class DMHaloModel(MassFunction):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
@@ -807,7 +807,7 @@ class DMHaloModel(MassFunction):
         #    ) for i in range(self.z.size)]
         #
         #    return lambda k: np.array([
-        #        splines[i](k) for i, z in enumerate(self.z)
+        #        splines[i](k) for i in range(self.z.size)
         #    ])
 
     def _get_corr_2h_auto_fnc(
@@ -831,7 +831,7 @@ class DMHaloModel(MassFunction):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -859,7 +859,7 @@ class DMHaloModel(MassFunction):
             # Here we have a 1D primitive power, so we can just return it.
             #return self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0][0]
             return lambda k: np.array([
-                self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0][i](k) for i, z in enumerate(self.z)
+                self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0][i](k) for i in range(self.z.size)
             ])
 
         # Otherwise, first calculate the correlation function.
@@ -884,7 +884,7 @@ class DMHaloModel(MassFunction):
         ]
         
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @cached_quantity
@@ -1370,8 +1370,8 @@ class TracerHaloModel(DMHaloModel):
     # ===========================================================================
 
     @cached_quantity
-    def power_1h_ss_auto_tracer_fnc(self):
-        """A callable returning the satellite-satellite part of
+    def power_1h_ss_auto_tracer_fnc_(self):
+        """The satellite-satellite part of
         the 1-halo term of the tracer auto-power spectrum.
 
         Note: May not exist for every kind of tracer.
@@ -1382,15 +1382,23 @@ class TracerHaloModel(DMHaloModel):
             mean_dens=self.mean_tracer_den,
         )
 
-        splines = [tools.ExtendedSpline(
+        return [tools.ExtendedSpline(
             self.k,
             p[i, :],
             lower_func=tools._zero if self.force_1halo_turnover else "boundary",
             upper_func="power_law",
         ) for i in range(self.z.size)]
 
+    @cached_quantity
+    def power_1h_ss_auto_tracer_fnc(self):
+        """A callable returning the satellite-satellite part of
+        the 1-halo term of the tracer auto-power spectrum.
+
+        Note: May not exist for every kind of tracer.
+        """
+        splines = self.power_1h_ss_auto_tracer_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @property
@@ -1420,13 +1428,13 @@ class TracerHaloModel(DMHaloModel):
                 c[i, :] = c[i, :] / self.mean_tracer_den[i, np.newaxis]**2 - 1
 
             else:
-                c[i, :] = tools.hankel_transform(self.power_1h_ss_auto_tracer_fnc, self._r_table, "r")
+                c[i, :] = tools.hankel_transform(self.power_1h_ss_auto_tracer_fnc_[i], self._r_table, "r")
         splines =  [tools.ExtendedSpline(
             self._r_table, c[i, :], lower_func="power_law", upper_func=tools._zero
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
@@ -1439,9 +1447,9 @@ class TracerHaloModel(DMHaloModel):
         return self.corr_1h_ss_auto_tracer_fnc(self.r)
 
     @cached_quantity
-    def power_1h_cs_auto_tracer_fnc(self):
+    def power_1h_cs_auto_tracer_fnc_(self):
         """
-        A callable returning the cen-sat part of
+        The cen-sat part of
         the 1-halo term of the tracer auto-power spectrum.
 
         Note: May not exist for every kind of tracer.
@@ -1451,15 +1459,24 @@ class TracerHaloModel(DMHaloModel):
             integrand=self.dndm[:, np.newaxis, :] * 2 * self.hod.cs_pairs(self.m) * self.tracer_profile_ukm,
             mean_dens=self.mean_tracer_den,
         )
-        splines = [tools.ExtendedSpline(
+        return [tools.ExtendedSpline(
             self.k,
             p[i, :],
             lower_func=tools._zero if self.force_1halo_turnover else "boundary",
             upper_func="power_law" if np.all(p[-10:] > 0) else tools._zero,
         ) for i in range(self.z.size)]
 
+    @cached_quantity
+    def power_1h_cs_auto_tracer_fnc(self):
+        """
+        A callable returning the cen-sat part of
+        the 1-halo term of the tracer auto-power spectrum.
+
+        Note: May not exist for every kind of tracer.
+        """
+        splines = self.power_1h_cs_auto_tracer_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @property
@@ -1492,7 +1509,7 @@ class TracerHaloModel(DMHaloModel):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
@@ -1549,7 +1566,7 @@ class TracerHaloModel(DMHaloModel):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
@@ -1653,7 +1670,7 @@ class TracerHaloModel(DMHaloModel):
         """
         splines = self.power_1h_cross_tracer_matter_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @property
@@ -1672,7 +1689,7 @@ class TracerHaloModel(DMHaloModel):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
@@ -1714,7 +1731,7 @@ class TracerHaloModel(DMHaloModel):
         """A callable returning the 2-halo cross-power between tracer and matter."""
         splines = self.power_2h_cross_tracer_matter_fnc_
         return lambda k: np.array([
-            splines[i](k) for i, z in enumerate(self.z)
+            splines[i](k) for i in range(self.z.size)
         ])
 
     @property
@@ -1733,7 +1750,7 @@ class TracerHaloModel(DMHaloModel):
         ) for i in range(self.z.size)]
 
         return lambda r: np.array([
-            splines[i](r) for i, z in enumerate(self.z)
+            splines[i](r) for i in range(self.z.size)
         ])
 
     @property
