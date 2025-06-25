@@ -23,7 +23,7 @@ from hmf import Cosmology, MassFunction, cached_quantity, parameter
 from hmf._internals import get_mdl
 from hmf.cosmology.cosmo import astropy_to_colossus
 from hmf.density_field.filters import TopHat
-from scipy.interpolate import InterpolatedUnivariateSpline as spline
+from scipy.interpolate import InterpolatedUnivariateSpline as spline, make_interp_spline
 from scipy.optimize import minimize
 
 # import hmf.tools as ht
@@ -453,27 +453,33 @@ class DMHaloModel(MassFunction):
         if self.hc_spectrum == "filtered-lin":
             f = TopHat(None, None)
             p = self.power * f.k_space(self.k * 2.0)
-            first_zero = np.where(p <= 0)[0][0]
-            p[first_zero:] = 0
-            return tools.ExtendedSpline(
+            first_zero = np.where(p <= 0)
+            p[first_zero[0], first_zero[1][0]:] = 0
+            splines = [tools.ExtendedSpline(
                 self.k,
-                p,
-                lower_func=self.linear_power_fnc,
+                p[i, :],
+                lower_func=self.linear_power_fnc_[i],
                 upper_func=tools._zero,
                 match_lower=False,
-            )
+            ) for i in range(self.z.size)]
+            return lambda k: np.array([
+                splines[i](k) for i, z in enumerate(self.z)
+            ])
         elif self.hc_spectrum == "filtered-nl":
             f = TopHat(None, None)
             p = self.nonlinear_power * f.k_space(self.k * 3.0)
-            first_zero = np.where(p <= 0)[0][0]
-            p[first_zero:] = 0
-            return tools.ExtendedSpline(
+            first_zero = np.where(p <= 0)
+            p[first_zero[0], first_zero[1][0]:] = 0
+            splines = [tools.ExtendedSpline(
                 self.k,
-                p,
-                lower_func=self.nonlinear_power_fnc,
+                p[i, :],
+                lower_func=self.nonlinear_power_fnc_[i],
                 upper_func=tools._zero,
                 match_lower=False,
-            )
+            ) for i in range(self.z.size)]
+            return lambda k: np.array([
+                splines[i](k) for i, z in enumerate(self.z)
+            ])
         elif self.hc_spectrum == "linear":
             return self.linear_power_fnc
         elif self.hc_spectrum == "nonlinear":
@@ -487,9 +493,9 @@ class DMHaloModel(MassFunction):
             raise ValueError("hc_spectrum was specified incorrectly!")
 
     @cached_quantity
-    def linear_power_fnc(self):
-        """A callable returning the linear power as a function of k (in h/Mpc)."""
-        splines = [tools.ExtendedSpline(
+    def linear_power_fnc_(self):
+        """The linear power as a function of k (in h/Mpc)."""
+        return [tools.ExtendedSpline(
             self.k,
             self.power[i, :],
             lower_func=lambda k: k**self.n,
@@ -497,61 +503,49 @@ class DMHaloModel(MassFunction):
             domain=(0, np.inf),
         ) for i in range(self.z.size)]
         
+    @cached_quantity
+    def linear_power_fnc(self):
+        """A callable returning the linear power as a function of k (in h/Mpc)."""
+        splines = self.linear_power_fnc_
         return lambda k: np.array([
             splines[i](k) for i, z in enumerate(self.z)
         ])
-        
+
     @cached_quantity
-    def linear_power_fnc2(self):
-        """A callable returning the linear power as a function of k (in h/Mpc)."""
-        splines = [tools.ExtendedSpline(
+    def nonlinear_power_fnc_(self):
+        """The nonlinear (halofit) power as a function of k (in h/Mpc)."""
+        return [tools.ExtendedSpline(
             self.k,
-            self.power[i, :],
+            self.nonlinear_power[i, :],
             lower_func=lambda k: k**self.n,
             upper_func="power_law",
             domain=(0, np.inf),
         ) for i in range(self.z.size)]
         
-        return splines
-
     @cached_quantity
     def nonlinear_power_fnc(self):
         """A callable returning the nonlinear (halofit) power as a function of k (in h/Mpc)."""
-        splines = [tools.ExtendedSpline(
-            self.k,
-            self.nonlinear_power[i, :],
-            lower_func=lambda k: k**self.n,
-            upper_func="power_law",
-            domain=(0, np.inf),
-        ) for i in range(self.z.size)]
-        
+        splines = self.nonlinear_power_fnc_
         return lambda k: np.array([
             splines[i](k) for i, z in enumerate(self.z)
         ])
-        
-    @cached_quantity
-    def nonlinear_power_fnc2(self):
-        """A callable returning the nonlinear (halofit) power as a function of k (in h/Mpc)."""
-        splines = [tools.ExtendedSpline(
-            self.k,
-            self.nonlinear_power[i, :],
-            lower_func=lambda k: k**self.n,
-            upper_func="power_law",
-            domain=(0, np.inf),
-        ) for i in range(self.z.size)]
-        
-        return splines
 
     @cached_quantity
     def corr_linear_mm_fnc(self):
         """A callable returning the linear auto-correlation function of dark matter."""
-        corr = tools.hankel_transform(self.linear_power_fnc, self._r_table, "r")
-        return tools.ExtendedSpline(
+        corr = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            corr[i, :] = tools.hankel_transform(self.linear_power_fnc_[i], self._r_table, "r")
+        splines = [tools.ExtendedSpline(
             self._r_table,
-            corr,
+            corr[i, :],
             lower_func="power_law",
             upper_func=lambda x: np.zeros_like(x),
-        )
+        ) for i in range(self.z.size)]
+        
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @cached_quantity
     def corr_linear_mm(self):
@@ -561,13 +555,19 @@ class DMHaloModel(MassFunction):
     @cached_quantity
     def corr_halofit_mm_fnc(self):
         """A callable returning the nonlinear auto-correlation function of dark matter."""
-        corr = tools.hankel_transform(self.nonlinear_power_fnc, self._r_table, "r")
-        return tools.ExtendedSpline(
+        corr = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            corr[i, :] = tools.hankel_transform(self.nonlinear_power_fnc_[i], self._r_table, "r")
+        splines = [tools.ExtendedSpline(
             self._r_table,
-            corr,
+            corr[i, :],
             lower_func="power_law",
             upper_func=lambda x: np.zeros_like(x),
-        )
+        ) for i in range(self.z.size)]
+        
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @cached_quantity
     def corr_halofit_mm(self):
@@ -616,7 +616,7 @@ class DMHaloModel(MassFunction):
             mmax2 = mmax
 
         if mmin == mmax or mmin2 == mmax2:
-            spl = spline(np.log10(self.m), self.bias)
+            spl = make_interp_spline(np.log10(self.m), self.bias, axis=-1)
 
         def get_b(mn, mx):
             if mn == mx:
@@ -624,10 +624,10 @@ class DMHaloModel(MassFunction):
 
             mask = np.logical_and(self.m >= 10**mn, self.m <= 10**mx)
             return intg.simpson(
-                self.halo_bias[mask] * self.dndm[mask], x=self.m[mask]
-            ) / intg.simpson(self.dndm[mask], x=self.m[mask])
+                self.halo_bias[:, mask] * self.dndm[:, mask], x=self.m[mask]
+            ) / intg.simpson(self.dndm[:, mask], x=self.m[mask])
 
-        return get_b(mmin, mmax) * get_b(mmin2, mmax2) * self._power_halo_centres_fnc(k)
+        return get_b(mmin, mmax)[:, np.newaxis] * get_b(mmin2, mmax2)[:, np.newaxis] * self._power_halo_centres_fnc(k)
 
     # ===========================================================================
     # Halo Profile cached quantities
@@ -702,8 +702,6 @@ class DMHaloModel(MassFunction):
         for i in range(self.z.size):
             if self.halo_profile.has_lam:
                 lam = self.halo_profile_lam
-                print(lam.shape)
-                print(self.dndm.shape)
                 integrand = self.dndm[i, :] * self.m**3 * lam[i, :, :]
 
                 table[i, :] = (
@@ -733,14 +731,14 @@ class DMHaloModel(MassFunction):
         densityfunc = self.dndm * self.m / self.mean_density_in_halos
 
         if self.sd_bias_model is not None:
-            bias = np.outer(self.sd_bias_correction, self.halo_bias)
+            bias = self.sd_bias_correction[:, :, np.newaxis] * self.halo_bias[:, np.newaxis, :]
         else:
             bias = self.halo_bias
 
         return self.exclusion_model(
             m=self.m,
             density=densityfunc,
-            power_integrand=densityfunc * self.halo_profile_ukm,
+            power_integrand=densityfunc[:, np.newaxis, :] * self.halo_profile_ukm,
             bias=bias,
             r=self._r_table,
             halo_density=self.halo_overdensity_mean * self.mean_density0,
@@ -765,7 +763,8 @@ class DMHaloModel(MassFunction):
 
         # See Tinker+05 Appendix B for details on using the modified density in halo
         # exclusion models.
-        intg = (intg.T * exclusion.density_mod).T
+        #intg = (intg.T * exclusion.density_mod).T
+        intg = intg * exclusion.density_mod[:, :, np.newaxis]
 
         # Now, we need to debias the results. Mostly, this is for DM correlations, and
         # the point is that even if one uses a perfect pair of HMF/bias, the numerical
@@ -774,53 +773,66 @@ class DMHaloModel(MassFunction):
         # For tracer power spectra, the effective bias passed in should not be unity, but
         # instead should fix itself to the numerically-calculated effective bias.
         if debias:
-            bias = exclusion.bias[-1] if exclusion.bias.ndim == 2 else exclusion.bias
+            bias = exclusion.bias[:, -1, :] if exclusion.bias.ndim == 3 else exclusion.bias
 
             eff_bias = tools.spline_integral(exclusion.m, exclusion.density * bias, log=True)
-            intg *= (effective_bias / eff_bias) ** 2
-
-        if intg.ndim == 2:
-            return [
+            intg *= (effective_bias / eff_bias)[:, np.newaxis, np.newaxis] ** 2
+        
+        #if intg.ndim == 3: # It is always going to be 3D!
+        splines = [
+            [
                 tools.ExtendedSpline(
                     self.k,
-                    x * phh,
-                    lower_func=self.linear_power_fnc,
+                    x * phh[i, :],
+                    lower_func=self.linear_power_fnc_[i],
                     match_lower=True,
                     upper_func="power_law"
                     if (self.exclusion_model == NoExclusion and "filtered" not in self.hc_spectrum)
                     else tools._zero,
                 )
-                for i, x in enumerate(intg)
+                for j, x in enumerate(intg[i, :, :])
             ]
-        else:
-            return tools.ExtendedSpline(
-                self.k,
-                intg * phh,
-                lower_func=self.linear_power_fnc,
-                match_lower=True,
-                upper_func="power_law"
-                if (self.exclusion_model == NoExclusion and "filtered" not in self.hc_spectrum)
-                else tools._zero,
-            )
+            for i in range(self.z.size)
+        ]
+        return splines
+        #else:
+        #    splines = [tools.ExtendedSpline(
+        #        self.k,
+        #        intg[i, :] * phh[i, :],
+        #        lower_func=self.linear_power_fnc_[i],
+        #        match_lower=True,
+        #        upper_func="power_law"
+        #        if (self.exclusion_model == NoExclusion and "filtered" not in self.hc_spectrum)
+        #        else tools._zero,
+        #    ) for i in range(self.z.size)]
+        #
+        #    return lambda k: np.array([
+        #        splines[i](k) for i, z in enumerate(self.z)
+        #    ])
 
     def _get_corr_2h_auto_fnc(
         self, exclusion: Exclusion, effective_bias, debias=True
     ) -> Callable[[float | np.ndarray], float | np.ndarray]:
         """Get a callable returning the 2-halo term of an auto-correlation."""
-        power_primitive = self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)
-
-        if len(power_primitive) == 1:
-            # In the case that there is no scale-dependence from SD bias or exclusion
-            power_primitive = power_primitive[0]
-
-        # Need to set h smaller here because this might need to be transformed back
-        # to power.
-        corr = tools.hankel_transform(power_primitive, self._r_table, "r", h=1e-4)
+        corr = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            power_primitive = self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[i]
+            if self.exclusion_model is NoExclusion and self.sd_bias_model is None:
+                # In the case that there is no scale-dependence from SD bias or exclusion
+                power_primitive = power_primitive[0]
+                
+            # Need to set h smaller here because this might need to be transformed back
+            # to power.
+            corr[i, :] = tools.hankel_transform(power_primitive, self._r_table, "r", h=1e-4)
 
         lower_func = "power_law" if isinstance(Exclusion, NoExclusion) else tools._zero
-        return tools.ExtendedSpline(
-            self._r_table, corr, lower_func=lower_func, upper_func=tools._zero
-        )
+        splines = [tools.ExtendedSpline(
+            self._r_table, corr[i, :], lower_func=lower_func, upper_func=tools._zero
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @cached_quantity
     def corr_2h_auto_matter_fnc(
@@ -845,24 +857,35 @@ class DMHaloModel(MassFunction):
         """Get the halo model 2-halo matter auto-power spectrum."""
         if self.exclusion_model is NoExclusion and self.sd_bias_model is None:
             # Here we have a 1D primitive power, so we can just return it.
-            return self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0]
+            #return self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0][0]
+            return lambda k: np.array([
+                self._get_power_2h_primitive(exclusion, effective_bias, debias=debias)[0][i](k) for i, z in enumerate(self.z)
+            ])
 
         # Otherwise, first calculate the correlation function.
-        corr = self._get_corr_2h_auto_fnc(exclusion, effective_bias, debias=debias)
-        out = tools.hankel_transform(corr, self.k, "k", h=0.001)
-
-        # Everything below about k=1e-2 is essentially just the linear power biased,
-        # and the hankel transform stops working at some small k.
-        mask = self.k_hm < 1e-2
-        if np.any(mask):
-            warnings.warn(
-                "power_2h_auto_tracer for k < 1e-2 is not computed directly, but "
-                "is rather just the linear power * effective bias.",
-                stacklevel=2,
-            )
-            out[mask] = self.power[mask] * effective_bias
-
-        return tools.ExtendedSpline(self.k, out, lower_func="power_law", upper_func=tools._zero)
+        out = np.zeros((self.z.size, self.k.size))
+        for i in range(self.z.size):
+            corr = self._get_corr_2h_auto_fnc(exclusion, effective_bias, debias=debias)
+            out[i, :] = tools.hankel_transform(corr, self.k, "k", h=0.001)
+            # Everything below about k=1e-2 is essentially just the linear power biased,
+            # and the hankel transform stops working at some small k.
+            mask = self.k_hm < 1e-2
+            if np.any(mask):
+                warnings.warn(
+                    "power_2h_auto_tracer for k < 1e-2 is not computed directly, but "
+                    "is rather just the linear power * effective bias.",
+                    stacklevel=2,
+                )
+                out[i, mask] = self.power[i, mask] * effective_bias[i]
+    
+        splines = [
+            tools.ExtendedSpline(self.k, out[i, :], lower_func="power_law", upper_func=tools._zero)
+            for i in range(self.z.size)
+        ]
+        
+        return lambda k: np.array([
+            splines[i](k) for i, z in enumerate(self.z)
+        ])
 
     @cached_quantity
     def power_2h_auto_matter_fnc(self) -> np.ndarray:
@@ -1536,12 +1559,12 @@ class TracerHaloModel(DMHaloModel):
 
     @cached_quantity
     def _tracer_exclusion(self):
-        densityfunc = self.dndm[self._tm] * self.total_occupation[self._tm] / self.mean_tracer_den
+        densityfunc = self.dndm[:, self._tm] * self.total_occupation[self._tm] / self.mean_tracer_den[:, np.newaxis]
 
         if self.sd_bias_model is not None:
             bias = (self.sd_bias_correction[:, :, np.newaxis] * self.halo_bias[:, np.newaxis, :])[:, :, self._tm]
         else:
-            bias = self.halo_bias[self._tm]
+            bias = self.halo_bias[:, self._tm]
 
         return self.exclusion_model(
             m=self.m[self._tm],
@@ -1602,9 +1625,9 @@ class TracerHaloModel(DMHaloModel):
     # Cross-correlations
     # ===========================================================================
     @cached_quantity
-    def power_1h_cross_tracer_matter_fnc(self):
+    def power_1h_cross_tracer_matter_fnc_(self):
         """
-        A callable returning the total 1-halo cross-power spectrum
+        The 1-halo cross-power spectrum
         between tracer and matter.
         """
         p = np.zeros((self.z.size, self.k.size))
@@ -1620,8 +1643,15 @@ class TracerHaloModel(DMHaloModel):
         p /= self.mean_tracer_den[:, np.newaxis] * self.mean_density0
 
         # Create a list of splines for each redshift
-        splines = [tools.ExtendedSpline(self.k, p[i, :], lower_func="power_law", upper_func="power_law") for i in range(self.z.size)]
-
+        return [tools.ExtendedSpline(self.k, p[i, :], lower_func="power_law", upper_func="power_law") for i in range(self.z.size)]
+        
+    @cached_quantity
+    def power_1h_cross_tracer_matter_fnc(self):
+        """
+        A callable returning the total 1-halo cross-power spectrum
+        between tracer and matter.
+        """
+        splines = self.power_1h_cross_tracer_matter_fnc_
         return lambda k: np.array([
             splines[i](k) for i, z in enumerate(self.z)
         ])
@@ -1634,10 +1664,16 @@ class TracerHaloModel(DMHaloModel):
     @cached_quantity
     def corr_1h_cross_tracer_matter_fnc(self):
         """A callable returning the 1-halo cross-corr between tracer and matter."""
-        corr = tools.hankel_transform(self.power_1h_cross_tracer_matter_fnc, self._r_table, "r")
-        return tools.ExtendedSpline(
-            self._r_table, corr, lower_func="power_law", upper_func=tools._zero
-        )
+        corr = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            corr[i, :] = tools.hankel_transform(self.power_1h_cross_tracer_matter_fnc_[i], self._r_table, "r")
+        splines = [tools.ExtendedSpline(
+            self._r_table, corr[i, :], lower_func="power_law", upper_func=tools._zero
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_1h_cross_tracer_matter(self):
@@ -1645,8 +1681,8 @@ class TracerHaloModel(DMHaloModel):
         return self.corr_1h_cross_tracer_matter_fnc(self.r)
 
     @cached_quantity
-    def power_2h_cross_tracer_matter_fnc(self):
-        """A callable returning the 2-halo cross-power between tracer and matter."""
+    def power_2h_cross_tracer_matter_fnc_(self):
+        """The 2-halo cross-power between tracer and matter."""
         # Do this the simple way for now
         bt = np.zeros((self.z.size, self.k.size))
         bm = np.zeros((self.z.size, self.k.size))
@@ -1663,16 +1699,20 @@ class TracerHaloModel(DMHaloModel):
             bt
             * bm
             * self._power_halo_centres_fnc(self.k)
-            / (self.mean_tracer_den * self.mean_density0)
+            / (self.mean_tracer_den[:, np.newaxis] * self.mean_density0)
         )
 
-        splines = np.array([tools.ExtendedSpline(
+        return [tools.ExtendedSpline(
             self.k,
-            power,
+            power[i, :],
             lower_func="power_law",
             upper_func="power_law" if "filtered" not in self.hc_spectrum else tools._zero,
-        ) for i in range(self.z.size)])
+        ) for i in range(self.z.size)]
         
+    @cached_quantity
+    def power_2h_cross_tracer_matter_fnc(self):
+        """A callable returning the 2-halo cross-power between tracer and matter."""
+        splines = self.power_2h_cross_tracer_matter_fnc_
         return lambda k: np.array([
             splines[i](k) for i, z in enumerate(self.z)
         ])
@@ -1685,10 +1725,16 @@ class TracerHaloModel(DMHaloModel):
     @cached_quantity
     def corr_2h_cross_tracer_matter_fnc(self):
         """A callable returning the 2-halo cross-corr between tracer and matter."""
-        corr = tools.hankel_transform(self.power_2h_cross_tracer_matter_fnc, self._r_table, "r")
-        return tools.ExtendedSpline(
-            self._r_table, corr, lower_func="power_law", upper_func=tools._zero
-        )
+        corr = np.zeros((self.z.size, self._r_table.size))
+        for i in range(self.z.size):
+            corr[i, :] = tools.hankel_transform(self.power_2h_cross_tracer_matter_fnc_[i], self._r_table, "r")
+        splines = [tools.ExtendedSpline(
+            self._r_table, corr[i, :], lower_func="power_law", upper_func=tools._zero
+        ) for i in range(self.z.size)]
+
+        return lambda r: np.array([
+            splines[i](r) for i, z in enumerate(self.z)
+        ])
 
     @property
     def corr_2h_cross_tracer_matter(self):
