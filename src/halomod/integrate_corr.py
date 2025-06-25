@@ -39,7 +39,7 @@ class ProjectedCF(HaloModel):
 
     def __init__(
         self,
-        z: float | np.ndarray = 0.0
+        z: float | np.ndarray = 0.0,
         rp_min: float = 0.01,
         rp_max: float = 50.0,
         rp_num: float = 30,
