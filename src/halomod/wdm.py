@@ -62,15 +62,15 @@ class HaloModelWDM(DMHaloModel, MassFunctionWDM):
     @cached_quantity
     def f_halos(self):
         """The total fraction of mass bound up in halos."""
-        return self.rho_gtm[0] / self.mean_density
+        return self.rho_gtm[:, 0] / self.mean_density
 
     @cached_quantity
     def power_auto_matter(self):
         """Auto power spectrum of dark matter."""
         return (
-            (1 - self.f_halos) ** 2 * self.power_auto_matter_ss
-            + 2 * (1 - self.f_halos) * self.f_halos * self.power_auto_matter_sh
-            + self.f_halos**2 * self.power_auto_matter_hh
+            (1 - self.f_halos[:, np.newaxis]) ** 2 * self.power_auto_matter_ss
+            + 2 * (1 - self.f_halos[:, np.newaxis]) * self.f_halos[:, np.newaxis] * self.power_auto_matter_sh
+            + self.f_halos[:, np.newaxis]**2 * self.power_auto_matter_hh
         )
 
     @cached_quantity
@@ -79,22 +79,22 @@ class HaloModelWDM(DMHaloModel, MassFunctionWDM):
         return (
             (self.power_1h_auto_matter + self.power_2h_auto_matter)
             * self.mean_density**2
-            / self.rho_gtm[0] ** 2
+            / self.rho_gtm[:, 0] ** 2
         )
 
     @cached_quantity
     def power_auto_matter_sh(self) -> np.ndarray:
         """The smooth-halo cross power spectrum."""
         integrand = (
-            self.m * self.dndm * self.halo_bias * self.halo_profile.u(self.k_hm, self.m, norm="m")
+            self.m[np.newaxis, np.newaxis, :] * self.dndm[:, np.newaxis, :] * self.halo_bias[:, np.newaxis, :] * self.halo_profile.u(self.k_hm, self.m, norm="m")
         )
-        pch = intg.simpson(integrand, x=self.m)
-        return self.bias_smooth * self._power_halo_centres_fnc(self.k_hm) * pch / self.rho_gtm[0]
+        pch = intg.simpson(integrand, x=self.m, axis=-1)
+        return self.bias_smooth[:, np.newaxis] * self._power_halo_centres_fnc(self.k_hm) * pch / self.rho_gtm[:, 0, np,newaxis]
 
     @cached_quantity
     def power_auto_matter_ss(self) -> np.ndarray:
         """The smooth-smooth matter power spectrum."""
-        return self.bias_smooth**2 * self._power_halo_centres_fnc(self.k_hm)
+        return self.bias_smooth[:, np.newaxis]**2 * self._power_halo_centres_fnc(self.k_hm)
 
     @cached_quantity
     def bias_smooth(self):
@@ -107,7 +107,7 @@ class HaloModelWDM(DMHaloModel, MassFunctionWDM):
     @cached_quantity
     def mean_density_halos(self):
         """Mean density of matter in halos."""
-        return self.rho_gtm[0]
+        return self.rho_gtm[:, 0]
 
     @cached_quantity
     def mean_density_smooth(self):

@@ -184,10 +184,10 @@ class Exclusion(Component):
         r: np.ndarray,
         halo_density: float,
     ):
-        self.density = density  # 1d, (m)
+        self.density = density  # 2d, (z,m)
         self.m = m  # 1d, (m)
-        self.power_integrand = power_integrand  # 2d, (k,m)
-        self.bias = bias  # 1d (m) or 2d (r,m)
+        self.power_integrand = power_integrand  # 3d, (z,k,m)
+        self.bias = bias  # 2d (z,m) or 3d (z,r,m)
         self.r = r  # 1d (r)
 
         self.halo_density = halo_density
@@ -196,13 +196,16 @@ class Exclusion(Component):
     def raw_integrand(self) -> np.ndarray:
         """Compute the full power spectrum integrand.
 
-        The output is always a 3D array, with shape ``(r, k, m)``.
+        The output is always a 4D array, with shape ``(z, r, k, m)``.
         """
-        if self.bias.ndim == 1:
+        if self.bias.ndim == 2:
             # *m since integrating in logspace
-            return outer(np.ones_like(self.r), self.power_integrand * self.bias * self.m)
+            #return outer(np.ones_like(self.r), self.power_integrand * self.bias[:, np.newaxis, :] * self.m)
+            return np.ones_like(self.r)[np.newaxis, :, np.newaxis, np.newaxis] * self.power_integrand[:, np.newaxis, :, :] * self.bias[:, np.newaxis, np.newaxis, :] * self.m[np.newaxis, np.newaxis, np.newaxis, :]
+            #return self.power_integrand[:, np.newaxis, :, :] * self.bias[:, np.newaxis, np.newaxis, :] * self.m[np.newaxis, np.newaxis, np.newaxis, :]
         else:
-            return np.einsum("ij,kj->kij", self.power_integrand * self.m, self.bias)
+            #return np.einsum("...ij,...kj->...kij", self.power_integrand * self.m, self.bias)
+            return np.ones_like(self.r)[np.newaxis, :, np.newaxis, np.newaxis] * self.power_integrand[:, np.newaxis, :, :] * self.bias[:, :, np.newaxis, :] * self.m[np.newaxis, np.newaxis, np.newaxis, :]
 
     def integrate(self) -> np.ndarray:
         """
@@ -228,7 +231,7 @@ class Exclusion(Component):
 
         The array is a vector of length ``r``.
         """
-        return 1
+        return np.ones((self.density.shape[0], self.r.size))
 
     @property
     def r_halo(self):
@@ -245,7 +248,7 @@ class NoExclusion(Exclusion):
         Returns
         -------
         np.ndarray
-            An array of shape ``(r, k)`` that should be multiplied by P_m(k) to obtain
+            An array of shape ``(z, r, k)`` that should be multiplied by P_m(z, k) to obtain
             the 2-halo power spectrum.
         """
         return intg.simpson(self.raw_integrand(), dx=self.dlnx) ** 2
@@ -269,21 +272,23 @@ class Sphere(Exclusion):
         Returns
         -------
         np.ndarray
-            The modified density as a function of the scale, r.
+            The modified density as a function of the scale, r ``(z, r)``.
         """
-        density = np.outer(np.ones_like(self.r), self.density * self.m)
+        #density = np.outer(np.ones_like(self.r), self.density * self.m)
+        density = np.ones_like(self.r)[np.newaxis, :, np.newaxis] * self.density[:, np.newaxis, :] * self.m[np.newaxis, np.newaxis, :]
         density[self.mask] = 0
         return intg.simpson(density, dx=self.dlnx)
 
     @cached_property
     def mask(self):
-        """Elements that should be set to zero. Shape (r, m)."""
-        return (np.outer(self.m, np.ones_like(self.r)) > self.mlim).T
+        """Elements that should be set to zero. Shape (z, r, m)."""
+        #return (np.outer(self.m, np.ones_like(self.r)) > self.mlim).T
+        return (self.m[np.newaxis, np.newaxis, :] * np.ones_like(self.r)[np.newaxis, :, np.newaxis] > self.mlim)
 
     @property
     def mlim(self):
         """The mass threshold for the mask."""
-        return 4 * np.pi * (self.r / 2) ** 3 * self.halo_density / 3
+        return 4 * np.pi * (self.r[np.newaxis, :, np.newaxis] / 2) ** 3 * self.halo_density[:, np.newaxis, np.newaxis] / 3
 
     def integrate(self):
         """Integrate the :meth:`raw_integrand` over mass under new mass limits.
@@ -291,14 +296,14 @@ class Sphere(Exclusion):
         Returns
         -------
         np.ndarray
-            An array of shape ``(r, k)`` that should be multiplied by P_m(k) to obtain
+            An array of shape ``(z, r, k)`` that should be multiplied by P_m(z, k) to obtain
             the 2-halo power spectrum.
         """
-        integ = self.raw_integrand()  # r,k,m
-        integ.transpose((1, 0, 2))[:, self.mask] = 0
+        integ = self.raw_integrand()  # z,r,k,m
+        integ.transpose((2, 0, 1, 3))[:, self.mask] = 0
         return intg.simpson(integ, dx=self.dlnx) ** 2
 
-
+# Anything except NoExclusion and Sphere not generalised for vectorised redshifts!
 class DblSphere(Sphere):
     r"""Double Sphere model of halo exclusion.
 
@@ -331,7 +336,7 @@ class DblSphere(Sphere):
 
     def integrate(self):
         """Integrate the :meth:`raw_integrand` over mass."""
-        integ = self.raw_integrand()  # (r,k,m)
+        integ = self.raw_integrand()  # (z,r,k,m)
         return integrate_dblsphere(integ, self.mask, self.dlnx)
 
 
@@ -421,8 +426,8 @@ class DblEllipsoid(DblSphere):
 
     def integrate(self):
         """Integrate the :meth:`raw_integrand` over mass."""
-        integ = self.raw_integrand()  # (r,k,m)
-        out = np.zeros_like(integ[:, :, 0])
+        integ = self.raw_integrand()  # (z,r,k,m)
+        out = np.zeros_like(integ[:, :, :, 0])
 
         integrand = np.zeros_like(self.prob)
         for ik in range(integ.shape[1]):
@@ -542,7 +547,7 @@ class NgMatched(DblEllipsoid):
 
     def integrate(self):
         """Integrate the :meth:`raw_integrand` over mass."""
-        integ = self.raw_integrand().transpose((1, 0, 2))  # k, r, m
+        integ = self.raw_integrand().transpose((1, 0, 2))  # z, k, r, m
         integ[:, self.mask] = 0
         return intg.simpson(integ.transpose((1, 0, 2)), dx=self.dlnx) ** 2
 

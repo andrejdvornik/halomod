@@ -23,6 +23,8 @@ class ProjectedCF(HaloModel):
 
     Parameters
     ----------
+    z
+        Array of redshifts where correlation function is defined
     rp_min
         Minimum projected scale to calculate (Mpc/h)
     rp_max
@@ -37,6 +39,7 @@ class ProjectedCF(HaloModel):
 
     def __init__(
         self,
+        z: float | np.ndarray = 0.0
         rp_min: float = 0.01,
         rp_max: float = 50.0,
         rp_num: float = 30,
@@ -55,6 +58,7 @@ class ProjectedCF(HaloModel):
         self.rp_max = rp_max
         self.rp_num = rp_num
         self.rp_log = rp_log
+        self.z = np.atleast_1d(z)
 
     @parameter("switch")
     def rp_min(self, val):
@@ -118,11 +122,11 @@ class ProjectedCF(HaloModel):
 
         To integrate perform a substitution y = x - r_p.
         """
-        return projected_corr_gal(self.r, self.corr_gg, self.rlim, self.rp)
+        return projected_corr_gal(self.z, self.r, self.corr_gg, self.rlim, self.rp)
 
 
 def projected_corr_gal(
-    r: np.ndarray, xir: np.ndarray, rlim: np.ndarray, rp_out: [None, np.ndarray] = None
+    z: np.ndarray, r: np.ndarray, xir: np.ndarray, rlim: np.ndarray, rp_out: [None, np.ndarray] = None
 ):
     """
     Projected correlation function w(r_p).
@@ -133,10 +137,12 @@ def projected_corr_gal(
 
     Parameters
     ----------
+    z : float array
+        Array of redshifts for the 3D correlation function
     r : float array
         Array of scales for the 3D correlation function, in [Mpc/h]
     xir : float array
-        3D correlation function Array of xi(r), unitless.
+        3D correlation function Array of xi(z, r), unitless.
     rlim : float array
         Upper limits of scales.
 
@@ -150,34 +156,35 @@ def projected_corr_gal(
         rp_out = r
 
     lnr = np.log(r)
-    lnxi = np.log(xir)
 
-    p = np.zeros_like(rp_out)
-    fit = _spline(r, xir, k=3)  # [self.corr_gal > 0] maybe?
-    f_peak = 0.01
-    a = 0
-
-    for i, rp in enumerate(rp_out):
-        if a != 1.3 and i < len(r) - 1:
-            # Get log slope at rp
-            ydiff = (lnxi[i + 1] - lnxi[i]) / (lnr[i + 1] - lnr[i])
-            # if the slope is flatter than 1.3, it will converge faster, but to make
-            # sure, we cut at 1.3
-            a = max(1.3, -ydiff)
-            theta = _get_theta(a)
-
-        min_y = theta * f_peak**2 * rp
-
-        # Get the upper limit for this rp
-        ylim = rlim - rp
-
-        # Set the y vector for this rp
-        y = np.logspace(np.log(min_y), np.log(ylim), 1000, base=np.e)
-
-        # Integrate
-        integ_corr = fit(y + rp)
-        integrand = (y + rp) * integ_corr / np.sqrt((y + 2 * rp) * y)
-        p[i] = simpson(integrand, x=y) * 2
+    p = np.zeros((z.size, rp_out.size))
+    for i, zi in enumerate(z):
+        lnxi = np.log(xir[i, :])
+        fit = _spline(r, xir[i, :], k=3)  # [self.corr_gal > 0] maybe?
+        f_peak = 0.01
+        a = 0
+    
+        for j, rp in enumerate(rp_out):
+            if a != 1.3 and i < len(r) - 1:
+                # Get log slope at rp
+                ydiff = (lnxi[j + 1] - lnxi[j]) / (lnr[j + 1] - lnr[j])
+                # if the slope is flatter than 1.3, it will converge faster, but to make
+                # sure, we cut at 1.3
+                a = max(1.3, -ydiff)
+                theta = _get_theta(a)
+    
+            min_y = theta * f_peak**2 * rp
+    
+            # Get the upper limit for this rp
+            ylim = rlim - rp
+    
+            # Set the y vector for this rp
+            y = np.logspace(np.log(min_y), np.log(ylim), 1000, base=np.e)
+    
+            # Integrate
+            integ_corr = fit(y + rp)
+            integrand = (y + rp) * integ_corr / np.sqrt((y + 2 * rp) * y)
+            p[i, j] = simpson(integrand, x=y) * 2
 
     return p
 
@@ -548,6 +555,7 @@ def angular_corr_gal(
             with photometric redshifts",
             https://ui.adsabs.harvard.edu/abs/2008MNRAS.385.1257B.
     """
+    # Needs redshift interpolation in order to calculate the integral when the correlation function is estimated for more than one redshift!
     if cosmo is None:
         cosmo = csm().cosmo
 
